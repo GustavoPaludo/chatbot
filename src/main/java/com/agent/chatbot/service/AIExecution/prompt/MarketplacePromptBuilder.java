@@ -1,0 +1,29 @@
+package com.agent.chatbot.service.AIExecution.prompt;
+
+import org.springframework.stereotype.Service;
+
+import com.agent.chatbot.service.AIExecution.enums.ExecutionTypeEnum;
+import com.agent.chatbot.service.AIExecution.models.AIConfigContext;
+
+@Service
+public class MarketplacePromptBuilder implements PromptBuilder {
+
+	@Override
+	public String buildPrompt(String userMessage, AIConfigContext context) {
+		if(!ExecutionTypeEnum.MARKETPLACE_ASSISTANT.equals(context.getExecutionTypeEnum())) {
+			return null;
+		}
+
+		StringBuilder prompt = new StringBuilder();
+		prompt.append("Você é um assistente que deve escolher o método que melhor responde à pergunta do usuário.\n");
+		prompt.append("O sistema trata de uma loja virtual.\n");
+
+		prompt.append("Você está respondendo a um usuário da cidade(instanceCode) ").append(context.getInstanceCode()).append(".\n");
+		prompt.append("ID do usuário(userId): ").append(context.getUserId()).append(".\n");
+		prompt.append("ID da conversa(chatId): ").append(context.getChatId()).append(".\n");
+
+		prompt.append("Pergunta do usuário: ").append(userMessage).append("\n");
+
+		return prompt.toString();
+	}
+}

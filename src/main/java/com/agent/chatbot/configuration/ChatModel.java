@@ -1,9 +1,10 @@
 package com.agent.chatbot.configuration;
 
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.ollama.OllamaChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.ollama.OllamaChatModel;
 
 @Configuration
 public class ChatModel {

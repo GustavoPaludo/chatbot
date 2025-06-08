@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import com.agent.chatbot.service.AIExecution.AIExecutionService;
+import com.agent.chatbot.service.AIExecution.enums.ExecutionTypeEnum;
 import com.agent.chatbot.service.AIExecution.models.AIConfigContext;
 
 @RestController
@@ -14,12 +15,13 @@ public class ChatController {
 	private AIExecutionService aiExecutionService;
 
 	@PostMapping
-	public String chat(@RequestBody String message, 
+	public <T> T chat(@RequestBody String message, 
 			@RequestParam(required = true) String chatId,
 			@RequestParam(required = true) String userId,
-			@RequestParam(required = true) String instanceCode) throws Exception {
+			@RequestParam(required = true) String instanceCode,
+			@RequestParam(required = true) ExecutionTypeEnum executionTypeEnum) throws Exception {
 
-		AIConfigContext aiContext = new AIConfigContext(chatId, userId, instanceCode);
+		AIConfigContext aiContext = new AIConfigContext(chatId, userId, instanceCode, executionTypeEnum);
 
 		return aiExecutionService.handleUserMessage(message, aiContext);
 	}

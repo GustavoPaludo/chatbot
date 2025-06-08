@@ -1,33 +1,50 @@
 package com.agent.chatbot.service.AIExecution;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
 import com.agent.chatbot.annotations.AIContext;
 import com.agent.chatbot.service.AIExecution.models.AIConfigContext;
+import com.agent.chatbot.service.AIExecution.models.AIResponse;
+import com.agent.chatbot.service.AIExecution.prompt.PromptBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-
-import java.lang.reflect.Method;
-import java.util.*;
 
 @Service
 public class AIExecutionServiceImpl implements AIExecutionService {
 
-	private final ChatLanguageModel chatLanguageModel;
+	private static final Logger logger = LoggerFactory.getLogger(AIExecutionServiceImpl.class);
+
+	private final ObjectMapper objectMapper;
 	private final List<AIInterface> aiInterfaces;
+	private final List<PromptBuilder> promptBuilders;
+	private final ChatLanguageModel chatLanguageModel;
 
 	@Autowired
-	public AIExecutionServiceImpl(ChatLanguageModel chatLanguageModel, List<AIInterface> aiInterfaces) {
-		this.chatLanguageModel = chatLanguageModel;
+	public AIExecutionServiceImpl(ChatLanguageModel chatLanguageModel, List<AIInterface> aiInterfaces, List<PromptBuilder> promptBuilders, ObjectMapper objectMapper) {
 		this.aiInterfaces = aiInterfaces;
+		this.promptBuilders = promptBuilders;
+		this.chatLanguageModel = chatLanguageModel;
+		this.objectMapper = objectMapper;
 	}
 
 	@Override
-	public String handleUserMessage(String userMessage, AIConfigContext aiConfigContext) throws Exception {
-		if(aiConfigContext == null) {
-			throw new Exception("AIContext not defined");
+	@SuppressWarnings("unchecked")
+	public <T> T handleUserMessage(String userMessage, AIConfigContext context) throws Exception {
+		if (context == null) {
+			throw new Exception("AIContext não definido");
 		}
 
 		Map<Integer, Method> methodMap = new HashMap<>();
@@ -42,66 +59,101 @@ public class AIExecutionServiceImpl implements AIExecutionService {
 			for (Method method : clazz.getDeclaredMethods()) {
 				if (method.isAnnotationPresent(AIContext.class)) {
 					AIContext annotation = method.getAnnotation(AIContext.class);
-					methodMap.put(index, method);
-					targetMap.put(index, aiInterface);
-					descriptions.put(index, annotation.description());
-					index++;
+
+					if (Arrays.asList(annotation.contexts()).contains(context.getExecutionTypeEnum())) {
+						methodMap.put(index, method);
+						targetMap.put(index, aiInterface);
+						descriptions.put(index, annotation.description());
+						index++;
+					}
 				}
 			}
 		}
 
 		StringBuilder prompt = new StringBuilder();
-		prompt.append("Você é um assistente que deve escolher o método que melhor responde à pergunta do usuário.\n");
+		prompt.append("Você deve interpretar a solicitação do usuário com base nos métodos disponíveis listados abaixo.\n\n");
 
-		prompt.append("Você está respondendo a um usuário da cidade(instanceCode) ").append(aiConfigContext.getInstanceCode()).append(".\n");
-		prompt.append("ID do usuário(userId): ").append(aiConfigContext.getUserId()).append(".\n");
-		prompt.append("ID da conversa(chatId): ").append(aiConfigContext.getChatId()).append(".\n");
+		prompt.append("### INSTRUÇÕES CRÍTICAS:\n");
+		prompt.append("- A resposta deve conter **apenas** um objeto JSON válido, **sem qualquer texto adicional antes ou depois**.\n");
+		prompt.append("- Só preencha o campo `methodIndex` se um dos métodos listados abaixo puder executar **exatamente** o que o usuário solicitou, **sem interpretação subjetiva**.\n");
+		prompt.append("- **Nunca** escolha um método apenas por ter relação temática. Só selecione se ele **executa exatamente** o que foi pedido.\n");
+		prompt.append("- Se **nenhum método** se aplicar diretamente, você deve:\n");
+		prompt.append("  - Retornar `methodIndex: null`\n");
+		prompt.append("  - Preencher `description` com uma mensagem educada explicando que não é possível atender ao pedido, e sugerir temas que você pode ajudar.\n\n");
 
-		prompt.append("Métodos disponíveis:\n");
+		prompt.append("### FORMATO EXATO DA RESPOSTA (sem texto fora do JSON):\n");
+		prompt.append("{\n");
+		prompt.append("  \"methodIndex\": número_do_método,      // ou null\n");
+		prompt.append("  \"description\": \"Explicação clara ao usuário em português\"\n");
+		prompt.append("}\n\n");
+
+		prompt.append("### EXEMPLO QUANDO NENHUM MÉTODO É ADEQUADO:\n");
+		prompt.append("{\n");
+		prompt.append("  \"methodIndex\": null,\n");
+		prompt.append("  \"description\": \"Sou a assistente da loja, mas não posso responder perguntas sobre clima. Se quiser saber sobre outro assunto que eu conheça, posso te ajudar.\"\n");
+		prompt.append("}\n\n");
+
+		prompt.append("### REGRAS RÍGIDAS:\n");
+		prompt.append("- A resposta **não pode conter explicações, comentários ou texto antes ou depois do JSON**.\n");
+		prompt.append("- Nunca escreva \"Here is the response\" ou similar.\n");
+		prompt.append("- A resposta **obrigatoriamente é apenas o JSON representando o objeto solicitado, pois ele será descerializado e caso não esteja nesse formato ocorrerão erros**.\n");
+		prompt.append("- O `methodIndex` deve ser um número inteiro válido presente na lista de métodos abaixo.\n");
+		prompt.append("- **Nunca** escolha um método cujo retorno não seja o pedido. Se for perguntado de preços, não retorne horários de operação, e assim por diante.\n");
+		prompt.append("- Sempre escreva em **português**.\n\n");
+
+		prompt.append("### MÉTODOS DISPONÍVEIS:\n");
 		descriptions.forEach((i, desc) -> prompt.append(i).append(") ").append(desc).append("\n"));
-		prompt.append("Pergunta do usuário: ").append(userMessage).append("\n");
-		prompt.append(
-				"Responda com o número do método seguido de ':' e os parâmetros separados por vírgula. Exemplo: 1:food\n");
-		prompt.append("Se nenhum método servir, responda '0:'.\n");
+
+		String builderReturn = null;
+		for (PromptBuilder builder : promptBuilders) {
+			builderReturn = builder.buildPrompt(userMessage, context);
+			if (builderReturn != null) {
+				break;
+			}
+		}
+
+		if (builderReturn == null) {
+			throw new RuntimeException("Nenhum PromptBuilder retornou um prompt válido para o contexto " + context.getExecutionTypeEnum());
+		}
+
+		prompt.append(builderReturn);
 
 		AiMessage response = chatLanguageModel.generate(List.of(UserMessage.from(prompt.toString()))).content();
 
-		if (response == null || response.text().trim().startsWith("0:")) {
-			return "Desculpe, não consigo responder sobre esse assunto";
+		if (response == null || response.text() == null || response.text().trim().isEmpty()) {
+			return (T) "Desculpe, não consegui entender a solicitação.";
 		}
 
-		String[] parts = response.text().split(":", 2);
-		int methodNumber;
+		String rawResponse = response.text().trim();
+		AIResponse aiResponse;
 		try {
-			methodNumber = Integer.parseInt(parts[0].trim());
-		} catch (NumberFormatException e) {
-			return "Resposta inválida da IA.";
+			aiResponse = objectMapper.readValue(rawResponse, AIResponse.class);
+		} catch (Exception e) {
+			logger.error("Erro ao desserializar a resposta JSON: " + rawResponse, e);
+			return (T) "Erro ao interpretar a resposta da IA.";
 		}
 
-		String[] params = parts.length > 1 ? parts[1].split(",") : new String[0];
-
-		if (!methodMap.containsKey(methodNumber)) {
-			return "Desculpe, não consigo responder sobre esse assunto";
+		if (aiResponse.getMethodIndex() == null || !methodMap.containsKey(aiResponse.getMethodIndex())) {
+			return (T) "Desculpe, não consigo responder sobre o assunto. Tente perguntar sobre algo relacionado ao contexto da operação.";
 		}
 
-		Method methodToCall = methodMap.get(methodNumber);
-		Object target = targetMap.get(methodNumber);
+		Method methodToCall = methodMap.get(aiResponse.getMethodIndex());
+		Object target = targetMap.get(aiResponse.getMethodIndex());
+		if (methodToCall == null || target == null) {
+			return (T) "Método solicitado não encontrado.";
+		}
 
 		try {
 			Object result;
-
 			if (methodToCall.getParameterCount() == 0) {
 				result = methodToCall.invoke(target);
 			} else {
-				Object[] args = Arrays.stream(params).map(String::trim).toArray();
-				result = methodToCall.invoke(target, args);
+				return (T) "O método selecionado requer parâmetros e ainda não há suporte para isso.";
 			}
-
-			return result == null ? "" : result.toString();
-
-		} catch (Exception e) {
-			e.printStackTrace();
-			return "Erro ao executar o método: " + e.getMessage();
+			return (T) result;
+		} catch (IllegalAccessException | InvocationTargetException e) {
+			logger.error("Erro ao executar método '{}': {}", methodToCall.getName(), e.getMessage(), e);
+			return (T) ("Erro ao executar o método: " + e.getMessage());
 		}
 	}
 }
